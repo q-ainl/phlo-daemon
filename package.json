@@ -1,0 +1,7 @@
+{
+  "name": "phlo-daemon",
+  "version": "0.1.0",
+  "description": "Optional per-host Phlo node sidecar: a generic central engine that dispatches any Phlo target to a pool of persistent phlo_serve workers. Consumers (websocket, runtime helpers, schedulers) talk to it over HTTP.",
+  "main": "phlo-daemon.js",
+  "license": "MIT"
+}
