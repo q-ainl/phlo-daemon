@@ -9,9 +9,10 @@
 // pool size. Hosts with workers 0 fall back to a fresh one-shot CLI process per call.
 //
 // HTTP surface (bind 127.0.0.1 by default; local-only):
-//   POST /dispatch {host,target,args?,stream?,async?} -> sync {status,result} | 202 {queued} |
-//        when stream: an application/x-ndjson stream of {t:line,data}* then {t:done,result}|{t:error}
-//   GET  /health -> pool stats per host
+//   POST /dispatch {target,args?,stream?,async?} + one of {app} (the caller's own app.php) or
+//        {host} (a configured ws host) -> sync {status,result} | 202 {queued} | when stream: an
+//        application/x-ndjson stream of {t:line,data}* then {t:done,result}|{t:error}
+//   GET  /health -> per-pool stats keyed by app path
 
 module.exports = (...input) => {
 	const http = require('http')
@@ -37,7 +38,7 @@ module.exports = (...input) => {
 		if (!host) throw new Error('Host is required.')
 		const entry = config.hosts[host]
 		if (!entry) throw new Error(`Host is not configured: ${host}`)
-		return { host, app: entry.app, php: config.php, workers: entry.workers, timeout: entry.timeout, recycle: entry.recycle }
+		return { label: host, app: entry.app, php: config.php, workers: entry.workers, timeout: entry.timeout, recycle: entry.recycle }
 	}
 
 	// A caller that knows its own app.php (the runtime helpers) dispatches by app path: no host map
@@ -47,18 +48,18 @@ module.exports = (...input) => {
 		app = String(app || '')
 		if (!APP_RE.test(app)) throw new Error(`Invalid app path: ${app}`)
 		const cfg = Object.values(config.hosts).find(h => h.app === app)
-		return { host: app, app, php: config.php, workers: cfg ? cfg.workers : config.defaultWorkers, timeout: cfg ? cfg.timeout : 30000, recycle: cfg ? cfg.recycle : 10000 }
+		return { label: app, app, php: config.php, workers: cfg ? cfg.workers : config.defaultWorkers, timeout: cfg ? cfg.timeout : 30000, recycle: cfg ? cfg.recycle : 10000 }
 	}
 
 	// --- Worker pool ---------------------------------------------------------
 	// Each worker runs `php <app.php> phlo_serve`, boots the app once, then answers newline-JSON
 	// requests on stdin. One request in flight per worker; correlation via the frame id.
 
-	const getPool = (host) => {
-		let pool = pools.get(host)
+	const getPool = (key) => {
+		let pool = pools.get(key)
 		if (!pool){
 			pool = { workers: new Set, queue: [] }
-			pools.set(host, pool)
+			pools.set(key, pool)
 		}
 		return pool
 	}
@@ -83,7 +84,7 @@ module.exports = (...input) => {
 				if (line.trim()) onFrame(runtime, pool, w, line)
 			}
 		})
-		w.proc.stderr.on('data', (data) => console.error(`PHP stderr (worker ${runtime.host}):\n${data.toString()}`))
+		w.proc.stderr.on('data', (data) => console.error(`PHP stderr (worker ${runtime.label}):\n${data.toString()}`))
 		w.proc.on('error', (err) => onWorkerGone(runtime, pool, w, `spawn error: ${err.message}`))
 		w.proc.on('exit', (code, signal) => onWorkerGone(runtime, pool, w, `exited (${signal || code})`))
 		pool.workers.add(w)
@@ -99,7 +100,7 @@ module.exports = (...input) => {
 		let frame
 		try { frame = JSON.parse(line) }
 		catch {
-			console.error(`worker desync on ${runtime.host}, raw: ${line}`)
+			console.error(`worker desync on ${runtime.label}, raw: ${line}`)
 			return killWorker(w)
 		}
 		if (frame.t === 'ready'){
@@ -109,7 +110,7 @@ module.exports = (...input) => {
 			return pump(runtime, pool)
 		}
 		if (frame.t === 'fatal'){
-			console.error(`worker fatal on ${runtime.host}: ${frame.message}`)
+			console.error(`worker fatal on ${runtime.label}: ${frame.message}`)
 			return killWorker(w)
 		}
 		const job = w.busy
@@ -163,7 +164,7 @@ module.exports = (...input) => {
 			w.busy = null
 			job.reject(new Error(`worker ${reason}`))
 		}
-		if (!w.recycling) console.error(`worker gone on ${runtime.host}: ${reason}`)
+		if (!w.recycling) console.error(`worker gone on ${runtime.label}: ${reason}`)
 		setTimeout(() => {
 			ensureWorkers(runtime, pool)
 			pump(runtime, pool)
@@ -195,9 +196,9 @@ module.exports = (...input) => {
 			}
 		})
 		proc.stdout.on('end', () => { if (onLine && buffer.trim()) onLine(buffer) })
-		proc.stderr.on('data', (data) => console.error(`PHP stderr for '${target}' on ${runtime.host}:\n${data.toString()}`))
-		proc.on('error', (err) => reject(new Error(`Failed to start PHP for '${target}' on ${runtime.host}: ${err.message}`)))
-		proc.on('close', (code) => code === 0 ? resolve(out.trim() || null) : reject(new Error(`PHP for '${target}' on ${runtime.host} exited with code ${code}`)))
+		proc.stderr.on('data', (data) => console.error(`PHP stderr for '${target}' on ${runtime.label}:\n${data.toString()}`))
+		proc.on('error', (err) => reject(new Error(`Failed to start PHP for '${target}' on ${runtime.label}: ${err.message}`)))
+		proc.on('close', (code) => code === 0 ? resolve(out.trim() || null) : reject(new Error(`PHP for '${target}' on ${runtime.label} exited with code ${code}`)))
 	})
 
 	const dispatch = (runtime, target, args = [], onLine = null, stream = false) =>
@@ -224,14 +225,14 @@ module.exports = (...input) => {
 	const server = http.createServer(async (req, res) => {
 		const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
 		if (url.pathname === '/health' && req.method === 'GET'){
-			const hosts = {}
-			for (const [host, pool] of pools.entries()){
+			const stats = {}
+			for (const [key, pool] of pools.entries()){
 				let busy = 0
 				for (const w of pool.workers) if (w.busy) busy++
-				hosts[host] = { workers: pool.workers.size, busy, queued: pool.queue.length }
+				stats[key] = { workers: pool.workers.size, busy, queued: pool.queue.length }
 			}
 			res.writeHead(200, {'Content-Type': 'application/json'})
-			res.end(JSON.stringify({ status: 'ok', hosts, configured: Object.keys(config.hosts) }))
+			res.end(JSON.stringify({ status: 'ok', pools: stats, configured: Object.keys(config.hosts) }))
 			return
 		}
 		if (url.pathname === '/dispatch' && req.method === 'POST'){
@@ -242,9 +243,9 @@ module.exports = (...input) => {
 				const target = String(body.target)
 				const args = Array.isArray(body.args) ? body.args : (body.args == null ? [] : [body.args])
 				if (body.async){
-					dispatch(runtime, target, args, null, false).catch(e => console.error(`async dispatch '${target}' on ${runtime.host}: ${e.message}`))
+					dispatch(runtime, target, args, null, false).catch(e => console.error(`async dispatch '${target}' on ${runtime.label}: ${e.message}`))
 					res.writeHead(202, {'Content-Type': 'application/json'})
-					res.end(JSON.stringify({ status: 'ok', host: runtime.host, queued: true }))
+					res.end(JSON.stringify({ status: 'ok', queued: true }))
 					return
 				}
 				if (body.stream){
@@ -261,7 +262,7 @@ module.exports = (...input) => {
 				}
 				const result = await dispatch(runtime, target, args, null, false)
 				res.writeHead(200, {'Content-Type': 'application/json'})
-				res.end(JSON.stringify({ status: 'ok', host: runtime.host, result }))
+				res.end(JSON.stringify({ status: 'ok', result }))
 			}
 			catch (error){
 				res.writeHead(400, {'Content-Type': 'application/json'})

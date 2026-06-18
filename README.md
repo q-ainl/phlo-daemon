@@ -3,7 +3,7 @@
 An optional per-host node sidecar for [Phlo](https://phlo.tech): a **generic central engine** that
 dispatches any Phlo target to a pool of persistent `phlo_serve` workers.
 
-Core Phlo always works without it — every target is callable as a one-shot CLI process
+Core Phlo always works without it: every target is callable as a one-shot CLI process
 (`php app.php <target> [args...]`). The daemon is purely an **extension**:
 
 1. a **worker pool** that runs those same calls far more performantly (boot the app once, reuse the
@@ -62,12 +62,12 @@ require('./phlo-daemon.js')(3002, '/usr/bin/php-zts', {
 ])
 ```
 
-- `workers` — pool size for the host; `0` falls back to a one-shot process per call.
-- `timeout` — per-request timeout (ms, default 30000).
-- `recycle` — replace a worker after N requests (default 10000; `0` disables).
-- `schedule` — `{host, target, every}` entries the daemon dispatches on their interval, first run
-  one interval after boot — this replaces cron for `tasks::run` / `fleet::poll`.
-- `defaultWorkers` — pool size for `app`-dispatched apps not present in `hostMap` (default 2).
+- `workers`: pool size for the host; `0` falls back to a one-shot process per call.
+- `timeout`: per-request timeout (ms, default 30000).
+- `recycle`: replace a worker after N requests (default 10000; `0` disables).
+- `schedule`: `{host, target, every}` entries the daemon dispatches on their interval, first run
+  one interval after boot, replacing cron for `tasks::run` / `fleet::poll`.
+- `defaultWorkers`: pool size for `app`-dispatched apps not present in `hostMap` (default 2).
 
 ## Consumers
 
