@@ -273,12 +273,21 @@ module.exports = (...input) => {
 	process.on('SIGTERM', () => { shutdown(); process.exit(0) })
 	process.on('SIGINT', () => { shutdown(); process.exit(0) })
 
-	server.listen(config.port, config.listen, () => console.log(`Phlo daemon listening on ${config.listen}:${config.port}`))
+	// Scheduler: run targets on their own interval via the pool (replaces cron for tasks/poller).
+	// Each entry is {host, target, every}; the first run is one interval after boot, like cron.
+	for (const s of config.schedule){
+		setInterval(() => {
+			try { dispatch(runtimeForHost(s.host), s.target, [], null, false).catch(e => console.error(`schedule '${s.target}'@${s.host}: ${e.message}`)) }
+			catch (e){ console.error(`schedule '${s.target}'@${s.host}: ${e.message}`) }
+		}, s.every * 1000)
+	}
+
+	server.listen(config.port, config.listen, () => console.log(`Phlo daemon listening on ${config.listen}:${config.port}${config.schedule.length ? ` (scheduling ${config.schedule.length})` : ''}`))
 
 	return { dispatch, runtimeForHost, pools }
 }
 
-function normalizeConfig(port, php, hostMap, listen = '127.0.0.1', maxBody = 1024 * 1024) {
+function normalizeConfig(port, php, hostMap, listen = '127.0.0.1', maxBody = 1024 * 1024, schedule = []) {
 	if (!port) throw new Error('Missing port.')
 	if (!php) throw new Error('Missing php binary.')
 	if (!hostMap || typeof hostMap !== 'object') throw new Error('Missing hosts config.')
@@ -295,5 +304,10 @@ function normalizeConfig(port, php, hostMap, listen = '127.0.0.1', maxBody = 102
 		const recycle = isObj && 'recycle' in value ? Math.max(0, parseInt(value.recycle, 10) || 0) : 10000
 		hosts[key] = { app: file, workers, timeout, recycle }
 	}
-	return { port, php, hosts, listen, maxBody }
+	const sched = (Array.isArray(schedule) ? schedule : []).map(s => ({
+		host: String((s && s.host) || '').trim().toLowerCase(),
+		target: String((s && s.target) || '').trim(),
+		every: Math.max(1, parseInt(s && s.every, 10) || 0),
+	})).filter(s => s.host && s.target && s.every)
+	return { port, php, hosts, listen, maxBody, schedule: sched }
 }
