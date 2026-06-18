@@ -40,6 +40,16 @@ module.exports = (...input) => {
 		return { host, app: entry.app, php: config.php, workers: entry.workers, timeout: entry.timeout, recycle: entry.recycle }
 	}
 
+	// A caller that knows its own app.php (the runtime helpers) dispatches by app path: no host map
+	// needed. Pool tuning is inherited if the app is also a configured (ws) host, else defaults.
+	const APP_RE = /^\/[a-zA-Z0-9_./-]+\/app\.php$/
+	const runtimeForApp = (app) => {
+		app = String(app || '')
+		if (!APP_RE.test(app)) throw new Error(`Invalid app path: ${app}`)
+		const cfg = Object.values(config.hosts).find(h => h.app === app)
+		return { host: app, app, php: config.php, workers: cfg ? cfg.workers : config.defaultWorkers, timeout: cfg ? cfg.timeout : 30000, recycle: cfg ? cfg.recycle : 10000 }
+	}
+
 	// --- Worker pool ---------------------------------------------------------
 	// Each worker runs `php <app.php> phlo_serve`, boots the app once, then answers newline-JSON
 	// requests on stdin. One request in flight per worker; correlation via the frame id.
@@ -161,7 +171,7 @@ module.exports = (...input) => {
 	}
 
 	const dispatchPool = (runtime, target, args, onLine, stream) => new Promise((resolve, reject) => {
-		const pool = getPool(runtime.host)
+		const pool = getPool(runtime.app)
 		ensureWorkers(runtime, pool)
 		if (pool.queue.length >= MAX_QUEUE) return reject(new Error('queue overflow'))
 		pool.queue.push({ id: (++seq).toString(36), target, args, stream: !!stream, onLine, resolve, reject, timer: null })
@@ -227,7 +237,7 @@ module.exports = (...input) => {
 		if (url.pathname === '/dispatch' && req.method === 'POST'){
 			try {
 				const body = await getJSONBody(req)
-				const runtime = runtimeForHost(body.host || req.headers['x-phlo-host'])
+				const runtime = body.app ? runtimeForApp(body.app) : runtimeForHost(body.host || req.headers['x-phlo-host'])
 				if (!body.target) throw new Error('Missing target.')
 				const target = String(body.target)
 				const args = Array.isArray(body.args) ? body.args : (body.args == null ? [] : [body.args])
@@ -287,7 +297,7 @@ module.exports = (...input) => {
 	return { dispatch, runtimeForHost, pools }
 }
 
-function normalizeConfig(port, php, hostMap, listen = '127.0.0.1', maxBody = 1024 * 1024, schedule = []) {
+function normalizeConfig(port, php, hostMap, listen = '127.0.0.1', maxBody = 1024 * 1024, schedule = [], defaultWorkers = 2) {
 	if (!port) throw new Error('Missing port.')
 	if (!php) throw new Error('Missing php binary.')
 	if (!hostMap || typeof hostMap !== 'object') throw new Error('Missing hosts config.')
@@ -309,5 +319,5 @@ function normalizeConfig(port, php, hostMap, listen = '127.0.0.1', maxBody = 102
 		target: String((s && s.target) || '').trim(),
 		every: Math.max(1, parseInt(s && s.every, 10) || 0),
 	})).filter(s => s.host && s.target && s.every)
-	return { port, php, hosts, listen, maxBody, schedule: sched }
+	return { port, php, hosts, listen, maxBody, schedule: sched, defaultWorkers: Math.max(0, parseInt(defaultWorkers, 10) || 0) }
 }

@@ -32,21 +32,25 @@ FrankenPHP HTTP worker loop, so jobs never leak into each other.
 
 Binds `127.0.0.1` by default (local-only; gate at the network boundary).
 
-- `POST /dispatch` `{host, target, args?, stream?, async?}`
-  - default: runs the target and returns `{status:"ok", result}`
-  - `async:true`: queues fire-and-forget, returns `202 {status:"ok", queued:true}`
-  - `stream:true`: replies with an `application/x-ndjson` stream of `{t:line,data}*` then
-    `{t:done,result}` / `{t:error}` (used for streaming output, e.g. websocket `receive`)
-- `GET /health`: per-host pool stats (`workers`, `busy`, `queued`) + configured hosts
+- `POST /dispatch` `{target, args?, stream?, async?}` plus one of:
+  - `app`: the absolute `…/app.php` path to run. A caller that knows its own app (the runtime
+    helpers) uses this, so it needs **no** host→app config; the pool is keyed by app path.
+  - `host`: a configured host, resolved to its app via the host map (used by the websocket, which
+    only knows the host). Pools are still keyed by the resolved app path.
+  - response: default `{status:"ok", result}`; `async:true` → `202 {status:"ok", queued:true}`;
+    `stream:true` → an `application/x-ndjson` stream of `{t:line,data}*` then `{t:done,result}` /
+    `{t:error}` (used for streaming output, e.g. websocket `receive`)
+- `GET /health`: per-pool stats keyed by app path (`workers`, `busy`, `queued`) + configured hosts
 
 ## Configuration
 
 ```js
-require('phlo-daemon')(port, phpBinary, hostMap, listen?, maxBody?, schedule?)
+require('phlo-daemon')(port, phpBinary, hostMap, listen?, maxBody?, schedule?, defaultWorkers?)
 ```
 
-`hostMap` keys are hosts; each value is an app entry — a string `'/srv/app/www/app.php'` (one-shot,
-`workers: 0`) or `{ app, workers, timeout?, recycle? }`:
+`hostMap` only needs the **websocket** hosts (the host→app routing the websocket can't derive). Apps
+that dispatch by `app` path (the runtime helpers) need no entry. Each value is a string
+`'/srv/app/www/app.php'` (one-shot, `workers: 0`) or `{ app, workers, timeout?, recycle? }`:
 
 ```js
 require('./phlo-daemon.js')(3002, '/usr/bin/php-zts', {
@@ -63,14 +67,16 @@ require('./phlo-daemon.js')(3002, '/usr/bin/php-zts', {
 - `recycle` — replace a worker after N requests (default 10000; `0` disables).
 - `schedule` — `{host, target, every}` entries the daemon dispatches on their interval, first run
   one interval after boot — this replaces cron for `tasks::run` / `fleet::poll`.
+- `defaultWorkers` — pool size for `app`-dispatched apps not present in `hostMap` (default 2).
 
 ## Consumers
 
 - **websocket** (`phlo-websocket`): keeps the websocket protocol, delegates the
   `websocket::{auth,connect,receive,close}` hooks to `/dispatch` (`receive` streams).
-- **runtime helpers**: `phlo_sync` / `phlo_async` route through `/dispatch` when the app sets the
-  optional `daemon` constant (`phlo_app(daemon: 'http://127.0.0.1:3002')`), otherwise they keep their
-  one-shot subprocess behaviour. So adopting the daemon is opt-in and never required.
+- **runtime helpers**: `phlo_sync` / `phlo_async` / `await` / `phlo_stream` route through `/dispatch`
+  by `app` path when the app sets the optional `daemon` constant
+  (`phlo_app(daemon: 'http://127.0.0.1:3002')`), otherwise they keep their one-shot subprocess
+  behaviour. Adopting the daemon is opt-in, never required, and needs no host→app config.
 - **whatsapp** stays its own service (persistent phone session); it is monitored, not absorbed.
 
 ## Run
