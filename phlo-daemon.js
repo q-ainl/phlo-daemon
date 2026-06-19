@@ -16,12 +16,16 @@
 
 module.exports = (...input) => {
 	const http = require('http')
+	const os = require('os')
 	const { spawn } = require('child_process')
 
 	const config = normalizeConfig(...input)
 	const pools = new Map
 	const RESPAWN_BACKOFF = 250
 	const MAX_QUEUE = 1000
+	const MAX_WORKERS = Math.max(1, os.cpus().length - 1)   // global cap across all pools; leaves a core for the webserver
+	const IDLE_MS = 60000                                   // reap a worker after this long idle
+	let totalWorkers = 0
 	let seq = 0
 
 	const normalizeHost = (value) => {
@@ -58,22 +62,29 @@ module.exports = (...input) => {
 	const getPool = (key) => {
 		let pool = pools.get(key)
 		if (!pool){
-			pool = { workers: new Set, queue: [] }
+			pool = { key, workers: new Set, queue: [], booting: false }
 			pools.set(key, pool)
 		}
 		return pool
 	}
 
-	// Bring a pool up to its worker count, booting one at a time: the first worker may compile the
-	// app (build mode) on boot, and letting several race would clobber the written php/*.php.
-	const ensureWorkers = (runtime, pool) => {
-		if (pool.booting || pool.workers.size >= runtime.workers) return
+	const hasIdle = (pool) => {
+		for (const w of pool.workers) if (w.ready && !w.busy && !w.recycling && !w.reaping) return true
+		return false
+	}
+
+	// Demand-driven scaling: add ONE worker only when there is queued work, no idle worker can take
+	// it, the global cap has room, and this pool is not already booting one. Booting one at a time
+	// guards the cold-app compile race (the first worker may compile the app). Pools shrink back to
+	// zero via the idle reaper, so there is no configured pool size.
+	const maybeScale = (runtime, pool) => {
+		if (!pool.queue.length || pool.booting || hasIdle(pool) || totalWorkers >= MAX_WORKERS) return
 		pool.booting = true
 		spawnWorker(runtime, pool)
 	}
 
 	const spawnWorker = (runtime, pool) => {
-		const w = { proc: null, busy: null, buffer: '', ready: false, events: 0, recycling: false }
+		const w = { proc: null, busy: null, buffer: '', ready: false, events: 0, recycling: false, reaping: false, lastUsed: Date.now() }
 		w.proc = spawn(runtime.php, [runtime.app, 'phlo_serve'])
 		w.proc.stdout.on('data', (data) => {
 			w.buffer += data.toString()
@@ -88,6 +99,7 @@ module.exports = (...input) => {
 		w.proc.on('error', (err) => onWorkerGone(runtime, pool, w, `spawn error: ${err.message}`))
 		w.proc.on('exit', (code, signal) => onWorkerGone(runtime, pool, w, `exited (${signal || code})`))
 		pool.workers.add(w)
+		totalWorkers++
 		return w
 	}
 
@@ -106,8 +118,8 @@ module.exports = (...input) => {
 		if (frame.t === 'ready'){
 			w.ready = true
 			pool.booting = false
-			ensureWorkers(runtime, pool)
-			return pump(runtime, pool)
+			pump(runtime, pool)
+			return maybeScale(runtime, pool)
 		}
 		if (frame.t === 'fatal'){
 			console.error(`worker fatal on ${runtime.label}: ${frame.message}`)
@@ -126,6 +138,7 @@ module.exports = (...input) => {
 			clearTimeout(job.timer)
 			w.busy = null
 			w.events++
+			w.lastUsed = Date.now()
 			frame.t === 'done' ? job.resolve(frame.result) : job.reject(new Error(frame.message || 'worker error'))
 			if (runtime.recycle && w.events >= runtime.recycle){
 				w.recycling = true
@@ -137,14 +150,16 @@ module.exports = (...input) => {
 
 	const pump = (runtime, pool) => {
 		for (const w of pool.workers){
-			if (!w.ready || w.busy || w.recycling) continue
+			if (!w.ready || w.busy || w.recycling || w.reaping) continue
 			if (!pool.queue.length) break
 			const job = pool.queue.shift()
 			w.busy = job
+			w.lastUsed = Date.now()
 			job.timer = setTimeout(() => onJobTimeout(w, job), runtime.timeout)
 			try { w.proc.stdin.write(JSON.stringify({ id: job.id, target: job.target, args: job.args, stream: job.stream }) + '\n') }
 			catch { /* the exit handler will reject the in-flight job and respawn */ }
 		}
+		maybeScale(runtime, pool)
 	}
 
 	const onJobTimeout = (w, job) => {
@@ -157,6 +172,7 @@ module.exports = (...input) => {
 	const onWorkerGone = (runtime, pool, w, reason) => {
 		if (!pool.workers.has(w)) return
 		pool.workers.delete(w)
+		totalWorkers--
 		if (!w.ready) pool.booting = false // it died mid-boot; free the boot slot
 		const job = w.busy
 		if (job){
@@ -164,16 +180,16 @@ module.exports = (...input) => {
 			w.busy = null
 			job.reject(new Error(`worker ${reason}`))
 		}
-		if (!w.recycling) console.error(`worker gone on ${runtime.label}: ${reason}`)
-		setTimeout(() => {
-			ensureWorkers(runtime, pool)
+		if (!w.recycling && !w.reaping) console.error(`worker gone on ${runtime.label}: ${reason}`)
+		// Only respawn if there is work waiting; idle shrink is intentional.
+		if (pool.queue.length) setTimeout(() => {
+			maybeScale(runtime, pool)
 			pump(runtime, pool)
 		}, RESPAWN_BACKOFF)
 	}
 
 	const dispatchPool = (runtime, target, args, onLine, stream) => new Promise((resolve, reject) => {
 		const pool = getPool(runtime.app)
-		ensureWorkers(runtime, pool)
 		if (pool.queue.length >= MAX_QUEUE) return reject(new Error('queue overflow'))
 		pool.queue.push({ id: (++seq).toString(36), target, args, stream: !!stream, onLine, resolve, reject, timer: null })
 		pump(runtime, pool)
@@ -232,7 +248,7 @@ module.exports = (...input) => {
 				stats[key] = { workers: pool.workers.size, busy, queued: pool.queue.length }
 			}
 			res.writeHead(200, {'Content-Type': 'application/json'})
-			res.end(JSON.stringify({ status: 'ok', pools: stats, configured: Object.keys(config.hosts) }))
+			res.end(JSON.stringify({ status: 'ok', workers: totalWorkers, cap: MAX_WORKERS, pools: stats, configured: Object.keys(config.hosts) }))
 			return
 		}
 		if (url.pathname === '/dispatch' && req.method === 'POST'){
@@ -281,8 +297,28 @@ module.exports = (...input) => {
 			}
 		}
 	}
-	process.on('SIGTERM', () => { shutdown(); process.exit(0) })
-	process.on('SIGINT', () => { shutdown(); process.exit(0) })
+	process.on('SIGTERM', () => {
+		shutdown()
+		process.exit(0)
+	})
+	process.on('SIGINT', () => {
+		shutdown()
+		process.exit(0)
+	})
+
+	// Idle reaper: kill workers unused for IDLE_MS so pools shrink back to zero, and drop empty pools.
+	setInterval(() => {
+		const now = Date.now()
+		for (const [key, pool] of pools){
+			for (const w of pool.workers){
+				if (w.ready && !w.busy && !w.recycling && !w.reaping && now - w.lastUsed > IDLE_MS){
+					w.reaping = true
+					killWorker(w)
+				}
+			}
+			if (!pool.workers.size && !pool.queue.length && !pool.booting) pools.delete(key)
+		}
+	}, 30000)
 
 	// Scheduler: run targets on their own interval via the pool (replaces cron for tasks/poller).
 	// Each entry is {host, target, every}; the first run is one interval after boot, like cron.
