@@ -10,8 +10,8 @@ Core Phlo always works without it: every target is callable as a one-shot CLI pr
    worker, instead of a fresh process per call), and
 2. the **enabler for websockets and scheduled tasks**, which need a long-lived host process.
 
-The daemon knows nothing about any specific consumer. The websocket package, the runtime helpers
-(`phlo_sync`/`phlo_async`/…) and schedulers are separate and talk to it over HTTP.
+The daemon's dispatch core knows nothing about any specific feature. The WebSocket server and the
+scheduler are built in; the PHP runtime helpers (`phlo_sync`/`phlo_async`/…) reach it over HTTP.
 
 ## Worker protocol
 
@@ -53,7 +53,7 @@ that dispatch by `app` path (the runtime helpers) need no entry. Each value is a
 `'/srv/app/www/app.php'` (one-shot, `workers: 0`) or `{ app, workers, timeout?, recycle? }`:
 
 ```js
-require('./phlo-daemon.js')(3002, '/usr/bin/php-zts', {
+require('./phlo-daemon.js')(3001, '/usr/bin/php-zts', {
   'dev.example.com': '/srv/example/www/app.php',                          // one-shot
   'api.example.com': { app: '/srv/api/www/app.php', workers: 4 },         // pool of 4
 }, '127.0.0.1', 1024 * 1024, [
@@ -71,13 +71,14 @@ require('./phlo-daemon.js')(3002, '/usr/bin/php-zts', {
 
 ## Consumers
 
-- **websocket** (`phlo-websocket`): keeps the websocket protocol, delegates the
-  `websocket::{auth,connect,receive,close}` hooks to `/dispatch` (`receive` streams).
+- **phloWS** (the daemon's built-in WebSocket layer): the WebSocket server runs
+  in-process, resolving each connection's host to an app and running the
+  `websocket::{auth,connect,receive,close}` hooks on the pool (`receive` streams).
 - **runtime helpers**: `phlo_sync` / `phlo_async` / `await` / `phlo_stream` route through `/dispatch`
   by `app` path when the app sets the optional `daemon` constant
-  (`phlo_app(daemon: 'http://127.0.0.1:3002')`), otherwise they keep their one-shot subprocess
+  (`phlo_app(daemon: 3001)`), otherwise they keep their one-shot subprocess
   behaviour. Adopting the daemon is opt-in, never required, and needs no host→app config.
-- **whatsapp** stays its own service (persistent phone session); it is monitored, not absorbed.
+- **Phlo WhatsApp** stays its own service (persistent phone session); it is monitored, not absorbed.
 
 ## Run
 
