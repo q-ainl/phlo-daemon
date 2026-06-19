@@ -32,42 +32,37 @@ FrankenPHP HTTP worker loop, so jobs never leak into each other.
 
 Binds `127.0.0.1` by default (local-only; gate at the network boundary).
 
-- `POST /dispatch` `{target, args?, stream?, async?}` plus one of:
-  - `app`: the absolute `…/app.php` path to run. A caller that knows its own app (the runtime
-    helpers) uses this, so it needs **no** host→app config; the pool is keyed by app path.
-  - `host`: a configured host, resolved to its app via the host map (used by the websocket, which
-    only knows the host). Pools are still keyed by the resolved app path.
+- `POST /dispatch` `{app, target, args?, stream?, async?}`: `app` is the absolute `…/app.php` path
+  to run (the pool is keyed by it). The runtime helpers use this; a caller that knows its own app
+  needs no host→app config.
   - response: default `{status:"ok", result}`; `async:true` → `202 {status:"ok", queued:true}`;
     `stream:true` → an `application/x-ndjson` stream of `{t:line,data}*` then `{t:done,result}` /
     `{t:error}` (used for streaming output, e.g. websocket `receive`)
-- `GET /health`: per-pool stats keyed by app path (`workers`, `busy`, `queued`) + configured hosts
+- `POST /register` `{host, app, build}`: an app announces its host (persisted to `registry.json`).
+- `POST /message` `{host, target, data}`: the broadcast bridge the websocket pushes through.
+- `GET /health`: `{workers, cap, pools, sockets, registered}` — live worker total vs cap, per-pool
+  stats keyed by app path (`workers`, `busy`, `queued`), connected sockets per host, registered hosts.
 
 ## Configuration
 
 ```js
-require('phlo-daemon')(port, phpBinary, hostMap, listen?, maxBody?, schedule?, defaultWorkers?)
+require('phlo-daemon')(port, phpBinary, schedule?)
 ```
 
-`hostMap` only needs the **websocket** hosts (the host→app routing the websocket can't derive). Apps
-that dispatch by `app` path (the runtime helpers) need no entry. Each value is a string
-`'/srv/app/www/app.php'` (one-shot, `workers: 0`) or `{ app, workers, timeout?, recycle? }`:
+No host map, no pool sizing: apps register their own host on first request, and each pool scales on
+demand up to a cap of one less than the core count, reaping idle workers. One-shot vs pooled follows
+the app's registered `build` flag (a `build: true` dev app runs one-shot; a release app is pooled).
 
 ```js
-require('./phlo-daemon.js')(3001, '/usr/bin/php-zts', {
-  'dev.example.com': '/srv/example/www/app.php',                          // one-shot
-  'api.example.com': { app: '/srv/api/www/app.php', workers: 4 },         // pool of 4
-}, '127.0.0.1', 1024 * 1024, [
-  { host: 'api.example.com', target: 'tasks::run',  every: 60 },          // scheduler
-  { host: 'dashboard.example.com', target: 'fleet::poll', every: 120 },
+require('./phlo-daemon.js')(3001, '/usr/bin/php-zts', [
+  { app: '/srv/dashboard/www/app.php', target: 'fleet::poll', every: 120, build: true },
+  { app: '/srv/api/www/app.php',       target: 'tasks::run',  every: 60,  build: false },
 ])
 ```
 
-- `workers`: pool size for the host; `0` falls back to a one-shot process per call.
-- `timeout`: per-request timeout (ms, default 30000).
-- `recycle`: replace a worker after N requests (default 10000; `0` disables).
-- `schedule`: `{host, target, every}` entries the daemon dispatches on their interval, first run
-  one interval after boot, replacing cron for `tasks::run` / `fleet::poll`.
-- `defaultWorkers`: pool size for `app`-dispatched apps not present in `hostMap` (default 2).
+- `schedule`: `{app, target, every, build}` entries the daemon dispatches on their interval, first
+  run one interval after boot, replacing cron for `tasks::run` / `fleet::poll`.
+- `PHLO_DAEMON_IDLE_MS` / `PHLO_DAEMON_REAP_MS`: env overrides for the idle timeout and the reap sweep.
 
 ## Consumers
 
@@ -83,7 +78,7 @@ require('./phlo-daemon.js')(3001, '/usr/bin/php-zts', {
 ## Run
 
 ```sh
-node config.js            # config.js requires this module with your host map
+node config.js            # config.js requires this module with (port, php, schedule)
 # or under a process manager
 pm2 start config.js --name phlo-daemon
 ```
