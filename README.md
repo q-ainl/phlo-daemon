@@ -66,7 +66,7 @@ require('./phlo-daemon.js')(3001, '/usr/bin/php-zts', [
 
 ## Consumers
 
-- **phloWS** (the daemon's built-in WebSocket layer): the WebSocket server runs
+- **Phlo Realtime** (the daemon's built-in WebSocket layer): the WebSocket server runs
   in-process, resolving each connection's host to an app and running the
   `websocket::{auth,connect,receive,close}` hooks on the pool (`receive` streams).
 - **runtime helpers**: `phlo_sync` / `phlo_async` / `await` / `phlo_stream` route through `/dispatch`
