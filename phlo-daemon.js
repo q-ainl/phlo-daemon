@@ -29,12 +29,15 @@ module.exports = (port, php, schedule = []) => {
 	const LISTEN = '127.0.0.1'
 	const MAX_BODY = 1024 * 1024
 	const MAX_WORKERS = Math.max(1, os.cpus().length - 1)   // global cap; leaves a core for the webserver
-	const IDLE_MS = 60000                                   // reap a worker after this long idle
+	// Idle/reap timings and the registry path default to production values; the env overrides exist
+	// only so the smoke test can run fast and against a throwaway registry file.
+	const IDLE_MS = parseInt(process.env.PHLO_DAEMON_IDLE_MS, 10) || 60000   // reap a worker after this long idle
+	const REAP_MS = parseInt(process.env.PHLO_DAEMON_REAP_MS, 10) || 30000   // how often the reaper sweeps
 	const RESPAWN_BACKOFF = 250
 	const MAX_QUEUE = 1000
 	const TIMEOUT = 30000
 	const RECYCLE = 10000
-	const REGISTRY_FILE = path.join(__dirname, 'registry.json')
+	const REGISTRY_FILE = process.env.PHLO_DAEMON_REGISTRY || path.join(__dirname, 'registry.json')
 
 	const pools = new Map     // app path -> pool
 	const clients = new Map   // host -> Map(token -> Map(socket -> ws))
@@ -497,7 +500,7 @@ module.exports = (port, php, schedule = []) => {
 			}
 			if (!pool.workers.size && !pool.queue.length && !pool.booting) pools.delete(key)
 		}
-	}, 30000)
+	}, REAP_MS)
 
 	// Scheduler: run targets on their own interval on the pool (replaces cron for tasks/poller).
 	// Each entry is {app, target, every}; the first run is one interval after boot, like cron.
