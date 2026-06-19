@@ -1,19 +1,3 @@
-// Phlo daemon: the optional always-on Phlo service. One node process that (1) runs any Phlo target
-// on a dynamic pool of phlo_serve workers, (2) is the websocket server, and (3) schedules tasks.
-// Core Phlo works without it (every target is a one-shot CLI call). Consumers reach it over loopback
-// HTTP; websocket events are dispatched in-process. Apps self-register their host -> app.php path,
-// persisted to disk, so the daemon needs no host configuration and survives a reboot.
-//
-// Worker protocol (engine phlo_serve): in {"id","target","args"?,"stream"?}; out {"t":"ready"} once,
-// then {"id","t":"line","data"}* (when streaming) and one {"id","t":"done","result"} | {"id","t":"error"}.
-//
-// HTTP + WS on one loopback port:
-//   POST /dispatch {app, target, args?, stream?, async?, build?}  run a target for an app
-//   POST /register {host, app, build}                            map a host to its app (persisted)
-//   POST /message  {host, target?, data}                         broadcast to a host's sockets
-//   GET  /health
-//   WS   upgrade (any path)                                      a client socket, routed by Host
-
 const fs = require('fs')
 const os = require('os')
 const http = require('http')
@@ -28,24 +12,22 @@ module.exports = (port, php, schedule = []) => {
 
 	const LISTEN = '127.0.0.1'
 	const MAX_BODY = 1024 * 1024
-	const MAX_WORKERS = Math.max(1, os.cpus().length - 1)   // global cap; leaves a core for the webserver
-	// Idle/reap timings and the registry path default to production values; the env overrides exist
-	// only so the smoke test can run fast and against a throwaway registry file.
-	const IDLE_MS = parseInt(process.env.PHLO_DAEMON_IDLE_MS, 10) || 60000   // reap a worker after this long idle
-	const REAP_MS = parseInt(process.env.PHLO_DAEMON_REAP_MS, 10) || 30000   // how often the reaper sweeps
+	const MAX_WORKERS = Math.max(1, os.cpus().length - 1)
+	const IDLE_MS = parseInt(process.env.PHLO_DAEMON_IDLE_MS, 10) || 60000
+	const REAP_MS = parseInt(process.env.PHLO_DAEMON_REAP_MS, 10) || 30000
 	const RESPAWN_BACKOFF = 250
 	const MAX_QUEUE = 1000
 	const TIMEOUT = 30000
 	const RECYCLE = 10000
 	const REGISTRY_FILE = process.env.PHLO_DAEMON_REGISTRY || path.join(__dirname, 'registry.json')
 
-	const pools = new Map     // app path -> pool
-	const clients = new Map   // host -> Map(token -> Map(socket -> ws))
-	const registry = new Map  // host -> { app, build }
+	const pools = new Map
+	const clients = new Map
+	const registry = new Map
 	let totalWorkers = 0
 	let seq = 0
 
-	const normalizeHost = (value) => {
+	const normalizeHost = value => {
 		if (!value) return null
 		const raw = String(value).split(',')[0].trim().toLowerCase()
 		if (!raw) return null
@@ -54,7 +36,6 @@ module.exports = (port, php, schedule = []) => {
 		return host.replace(/:\d+$/, '')
 	}
 
-	// --- Host registry: self-registered by apps, persisted so it survives a daemon or app reboot --
 	const loadRegistry = () => {
 		try {
 			const data = JSON.parse(fs.readFileSync(REGISTRY_FILE, 'utf8'))
@@ -81,11 +62,7 @@ module.exports = (port, php, schedule = []) => {
 		return { label: app, app, php, build: !!build, timeout: TIMEOUT, recycle: RECYCLE }
 	}
 
-	// --- Worker pool ----------------------------------------------------------------------------
-	// Each worker runs `php <app.php> phlo_serve`, boots the app once, then answers newline-JSON on
-	// stdin. One request in flight per worker; concurrency equals the (dynamic) pool size.
-
-	const getPool = (key) => {
+	const getPool = key => {
 		let pool = pools.get(key)
 		if (!pool){
 			pool = { key, workers: new Set, queue: [], booting: false }
@@ -94,14 +71,12 @@ module.exports = (port, php, schedule = []) => {
 		return pool
 	}
 
-	const hasIdle = (pool) => {
+	const hasIdle = pool => {
 		for (const w of pool.workers) if (w.ready && !w.busy && !w.recycling && !w.reaping) return true
 		return false
 	}
 
-	// Demand-driven scaling: add ONE worker only when there is queued work, no idle worker can take
-	// it, the global cap has room, and this pool is not already booting one. Booting one at a time
-	// guards the cold-app compile race. Pools shrink to zero via the idle reaper; no configured size.
+	// Boot one worker at a time per pool to guard the cold-app compile race; pools shrink to zero via the idle reaper.
 	const maybeScale = (rt, pool) => {
 		if (!pool.queue.length || pool.booting || hasIdle(pool) || totalWorkers >= MAX_WORKERS) return
 		pool.booting = true
@@ -111,7 +86,7 @@ module.exports = (port, php, schedule = []) => {
 	const spawnWorker = (rt, pool) => {
 		const w = { proc: null, busy: null, buffer: '', ready: false, events: 0, recycling: false, reaping: false, lastUsed: Date.now() }
 		w.proc = spawn(rt.php, [rt.app, 'phlo_serve'])
-		w.proc.stdout.on('data', (data) => {
+		w.proc.stdout.on('data', data => {
 			w.buffer += data.toString()
 			let idx
 			while ((idx = w.buffer.indexOf('\n')) !== -1){
@@ -120,15 +95,15 @@ module.exports = (port, php, schedule = []) => {
 				if (line.trim()) onFrame(rt, pool, w, line)
 			}
 		})
-		w.proc.stderr.on('data', (data) => console.error(`PHP stderr (worker ${rt.label}):\n${data.toString()}`))
-		w.proc.on('error', (err) => onWorkerGone(rt, pool, w, `spawn error: ${err.message}`))
+		w.proc.stderr.on('data', data => console.error(`PHP stderr (worker ${rt.label}):\n${data.toString()}`))
+		w.proc.on('error', err => onWorkerGone(rt, pool, w, `spawn error: ${err.message}`))
 		w.proc.on('exit', (code, signal) => onWorkerGone(rt, pool, w, `exited (${signal || code})`))
 		pool.workers.add(w)
 		totalWorkers++
 		return w
 	}
 
-	const killWorker = (w) => {
+	const killWorker = w => {
 		try { w.proc.kill('SIGKILL') }
 		catch {}
 	}
@@ -182,7 +157,7 @@ module.exports = (port, php, schedule = []) => {
 			w.lastUsed = Date.now()
 			job.timer = setTimeout(() => onJobTimeout(w, job), rt.timeout)
 			try { w.proc.stdin.write(JSON.stringify({ id: job.id, target: job.target, args: job.args, stream: job.stream }) + '\n') }
-			catch { /* the exit handler will reject the in-flight job and respawn */ }
+			catch {}
 		}
 		maybeScale(rt, pool)
 	}
@@ -219,13 +194,11 @@ module.exports = (port, php, schedule = []) => {
 		pump(rt, pool)
 	})
 
-	// One-shot fallback: a fresh process per call, for build-mode (dev) apps so hot-reload keeps
-	// working. Args pass as CLI argv, so only string-ish positional args round-trip.
 	const spawnOnce = (rt, target, args, onLine) => new Promise((resolve, reject) => {
 		const proc = spawn(rt.php, [rt.app, target, ...args.map(String)])
 		let buffer = ''
 		let out = ''
-		proc.stdout.on('data', (data) => {
+		proc.stdout.on('data', data => {
 			buffer += data.toString()
 			out += data.toString()
 			if (onLine){
@@ -235,16 +208,14 @@ module.exports = (port, php, schedule = []) => {
 			}
 		})
 		proc.stdout.on('end', () => { if (onLine && buffer.trim()) onLine(buffer) })
-		proc.stderr.on('data', (data) => console.error(`PHP stderr for '${target}' on ${rt.label}:\n${data.toString()}`))
-		proc.on('error', (err) => reject(new Error(`Failed to start PHP for '${target}' on ${rt.label}: ${err.message}`)))
-		proc.on('close', (code) => code === 0 ? resolve(out.trim() || null) : reject(new Error(`PHP for '${target}' on ${rt.label} exited with code ${code}`)))
+		proc.stderr.on('data', data => console.error(`PHP stderr for '${target}' on ${rt.label}:\n${data.toString()}`))
+		proc.on('error', err => reject(new Error(`Failed to start PHP for '${target}' on ${rt.label}: ${err.message}`)))
+		proc.on('close', code => code === 0 ? resolve(out.trim() || null) : reject(new Error(`PHP for '${target}' on ${rt.label} exited with code ${code}`)))
 	})
 
-	// Build-mode apps run one-shot (hot reload); release apps run on the pool.
 	const dispatch = (rt, target, args = [], onLine = null, stream = false) =>
 		rt.build ? spawnOnce(rt, target, args, onLine) : dispatchPool(rt, target, args, onLine, stream)
 
-	// --- WebSocket -------------------------------------------------------------------------------
 	const hostClients = (host, create = false) => {
 		if (!clients.has(host) && create) clients.set(host, new Map)
 		return clients.get(host)
@@ -256,7 +227,7 @@ module.exports = (port, php, schedule = []) => {
 		return map.get(token)
 	}
 
-	const parseTarget = (target) => {
+	const parseTarget = target => {
 		target = String(target || 'all')
 		if (target === 'all') return { mode: 'all' }
 		if (target.startsWith('token:not:')) return { mode: 'not', value: target.slice(10) }
@@ -289,14 +260,13 @@ module.exports = (port, php, schedule = []) => {
 		return sent
 	}
 
-	// Resolve a host to its registered app, then dispatch a websocket hook in-process.
 	const wsDispatch = (host, hook, args, onLine = null) => {
 		const entry = registry.get(host)
 		if (!entry) return Promise.reject(new Error(`Host is not registered: ${host}`))
 		return dispatch(runtime(entry.app, entry.build), `websocket::${hook}`, args, onLine, !!onLine)
 	}
 
-	const rejected = (value) => value === false || value === 'false'
+	const rejected = value => value === false || value === 'false'
 
 	const wss = new WebSocketServer({ noServer: true })
 	wss.on('connection', (ws, request, host, token, socket) => {
@@ -311,7 +281,7 @@ module.exports = (port, php, schedule = []) => {
 				ws.close()
 			}
 		}).catch(err => console.error('Phlo could not handle connect:', err.message))
-		ws.on('message', (message) => {
+		ws.on('message', message => {
 			wsDispatch(ws.host, 'receive', [ws.host, ws.token, ws.socket, message.toString()], line => {
 				if (ws.readyState === 1) ws.send(line)
 			}).catch(err => console.error('Phlo could not handle receive:', err.message))
@@ -326,18 +296,17 @@ module.exports = (port, php, schedule = []) => {
 			if (hostClients(ws.host)?.size === 0) clients.delete(ws.host)
 			wsDispatch(ws.host, 'close', [ws.host, ws.token, ws.socket]).catch(err => console.error('Phlo could not handle close:', err.message))
 		})
-		ws.on('error', (error) => console.error(`Client error for ${host} ${token} ${socket}:`, error))
+		ws.on('error', error => console.error(`Client error for ${host} ${token} ${socket}:`, error))
 	})
 
-	// --- HTTP ------------------------------------------------------------------------------------
-	const requestHost = (request) => normalizeHost(request.headers['x-forwarded-host'] || request.headers.host)
+	const requestHost = request => normalizeHost(request.headers['x-forwarded-host'] || request.headers.host)
 
-	const cookies = (request) => Object.fromEntries((request.headers.cookie || '').split(';').filter(Boolean).map(part => {
+	const cookies = request => Object.fromEntries((request.headers.cookie || '').split(';').filter(Boolean).map(part => {
 		const [key, ...valParts] = part.trim().split('=')
 		return [key, decodeURIComponent(valParts.join('='))]
 	}))
 
-	const getJSONBody = (req) => new Promise((resolve, reject) => {
+	const getJSONBody = req => new Promise((resolve, reject) => {
 		let body = ''
 		let rejectedBody = false
 		req.on('data', chunk => {
@@ -451,8 +420,7 @@ module.exports = (port, php, schedule = []) => {
 		res.writeHead(404).end()
 	})
 
-	// WebSocket upgrade: authenticate at the handshake from the `token` cookie, before accepting the
-	// socket. The connect path is whatever the reverse proxy forwards here, so it is not pinned.
+	// Authenticate at the WS handshake from the `token` cookie before accepting the socket; the connect path is whatever the proxy forwards, so it is not pinned.
 	server.on('upgrade', async (request, socketStream, head) => {
 		try {
 			const host = normalizeHost(requestHost(request))
@@ -462,7 +430,7 @@ module.exports = (port, php, schedule = []) => {
 			const socket = randomBytes(8).toString('hex')
 			const ok = await wsDispatch(host, 'auth', [host, token, socket])
 			if (rejected(ok)) throw new Error('Authentication rejected.')
-			wss.handleUpgrade(request, socketStream, head, (ws) => wss.emit('connection', ws, request, host, token, socket))
+			wss.handleUpgrade(request, socketStream, head, ws => wss.emit('connection', ws, request, host, token, socket))
 		}
 		catch (error){
 			console.log(`Unauthorized: ${error.message}`)
@@ -488,7 +456,6 @@ module.exports = (port, php, schedule = []) => {
 		process.exit(0)
 	})
 
-	// Idle reaper: kill workers unused for IDLE_MS so pools shrink back to zero, and drop empty pools.
 	setInterval(() => {
 		const now = Date.now()
 		for (const [key, pool] of pools){
@@ -502,8 +469,6 @@ module.exports = (port, php, schedule = []) => {
 		}
 	}, REAP_MS)
 
-	// Scheduler: run targets on their own interval on the pool (replaces cron for tasks/poller).
-	// Each entry is {app, target, every}; the first run is one interval after boot, like cron.
 	for (const s of schedule){
 		const app = String((s && s.app) || '')
 		const target = String((s && s.target) || '')

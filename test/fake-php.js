@@ -1,8 +1,5 @@
 #!/usr/bin/env node
-// Test stub standing in for `php <app.php> <target> [args]`. In phlo_serve mode it speaks the
-// worker protocol (ready, then a done frame per request); otherwise it runs one-shot and prints a
-// JSON result. websocket::auth returns true so the upgrade is accepted; other targets echo back.
-const args = process.argv.slice(2)   // [app, target, ...rest]
+const args = process.argv.slice(2)
 const target = args[1]
 
 if (target === 'phlo_serve'){

@@ -1,6 +1,3 @@
-// Smoke test for the node daemon: the behaviour phpunit can't reach. Uses a fake-php stub (no real
-// Phlo app) and throwaway timings/registry via env overrides. Covers: register -> persist ->
-// reload (restart-safe), demand spawn + idle reap, and the websocket token gate + cast fanout.
 const assert = require('assert')
 const http = require('http')
 const fs = require('fs')
@@ -9,7 +6,7 @@ const path = require('path')
 const WebSocket = require('ws')
 
 const STUB = path.join(__dirname, 'fake-php.js')
-const APP = '/tmp/phlo-daemon-smoke/app.php'   // never read; just has to match the daemon's app-path shape
+const APP = '/tmp/phlo-daemon-smoke/app.php'
 const REG = path.join(os.tmpdir(), 'phlo-daemon-smoke-registry.json')
 
 process.env.PHLO_DAEMON_IDLE_MS = '250'
@@ -60,7 +57,7 @@ const ok = (cond, msg) => {
 	r = await call(3099, '/health')
 	ok(r.json.workers === 0, 'idle worker reaped back to zero')
 
-	const received = await new Promise((resolve) => {
+	const received = await new Promise(resolve => {
 		const ws = new WebSocket('ws://127.0.0.1:3099/anything', { headers: { host: 'test.local', cookie: 'token=abc' } })
 		ws.on('open', () => call(3099, '/message', { host: 'test.local', target: 'all', data: { hello: 1 } }))
 		ws.on('message', m => { resolve(m.toString()); ws.close() })
@@ -69,7 +66,7 @@ const ok = (cond, msg) => {
 	})
 	ok(received && JSON.parse(received).hello === 1, 'authed client receives a /message broadcast')
 
-	const code = await new Promise((resolve) => {
+	const code = await new Promise(resolve => {
 		const ws = new WebSocket('ws://127.0.0.1:3099/anything', { headers: { host: 'test.local' } })
 		ws.on('open', () => resolve('opened'))
 		ws.on('unexpected-response', (q, res) => resolve(res.statusCode))
@@ -78,7 +75,7 @@ const ok = (cond, msg) => {
 	})
 	ok(code === 401, 'upgrade without a token cookie is refused (401), got: ' + code)
 
-	make(3098, STUB)   // a fresh daemon, same registry file
+	make(3098, STUB)
 	await sleep(200)
 	r = await call(3098, '/health')
 	ok(r.json.registered.includes('test.local'), 'a fresh daemon reloads the persisted registry (restart-safe)')
