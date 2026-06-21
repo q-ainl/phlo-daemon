@@ -1,12 +1,10 @@
-const fs = require('fs')
 const os = require('os')
 const http = require('http')
-const path = require('path')
 const { spawn } = require('child_process')
 const { randomBytes } = require('crypto')
 const { WebSocketServer } = require('ws')
 
-module.exports = (port, php, schedule = []) => {
+module.exports = (port, php, schedule = [], hosts = {}) => {
 	if (!port) throw new Error('Missing port.')
 	if (!php) throw new Error('Missing php binary.')
 
@@ -19,7 +17,6 @@ module.exports = (port, php, schedule = []) => {
 	const MAX_QUEUE = 1000
 	const TIMEOUT = 30000
 	const RECYCLE = 10000
-	const REGISTRY_FILE = process.env.PHLO_DAEMON_REGISTRY || path.join(__dirname, 'registry.json')
 
 	const pools = new Map
 	const clients = new Map
@@ -34,25 +31,6 @@ module.exports = (port, php, schedule = []) => {
 		const host = raw.replace(/^https?:\/\//, '').split('/')[0]
 		if (host.startsWith('[')) return host.replace(/^\[|\](?::\d+)?$/g, '')
 		return host.replace(/:\d+$/, '')
-	}
-
-	const loadRegistry = () => {
-		try {
-			const data = JSON.parse(fs.readFileSync(REGISTRY_FILE, 'utf8'))
-			for (const [host, entry] of Object.entries(data)) registry.set(host, entry)
-		}
-		catch {}
-	}
-	const saveRegistry = () => {
-		const out = {}
-		for (const [host, entry] of registry) out[host] = entry
-		try {
-			fs.writeFileSync(REGISTRY_FILE + '.tmp', JSON.stringify(out))
-			fs.renameSync(REGISTRY_FILE + '.tmp', REGISTRY_FILE)
-		}
-		catch (e){
-			console.error('registry save failed:', e.message)
-		}
 	}
 
 	const APP_RE = /^\/[a-zA-Z0-9_./-]+\/app\.php$/
@@ -343,26 +321,6 @@ module.exports = (port, php, schedule = []) => {
 			res.end(JSON.stringify({ status: 'ok', workers: totalWorkers, cap: MAX_WORKERS, pools: stats, sockets: live, registered: [...registry.keys()] }))
 			return
 		}
-		if (url.pathname === '/register' && req.method === 'POST'){
-			try {
-				const body = await getJSONBody(req)
-				const host = normalizeHost(body.host)
-				const app = String(body.app || '')
-				if (!host) throw new Error('Host is required.')
-				if (!APP_RE.test(app)) throw new Error(`Invalid app path: ${app}`)
-				const entry = { app, build: !!body.build }
-				const prev = registry.get(host)
-				registry.set(host, entry)
-				if (!prev || prev.app !== entry.app || prev.build !== entry.build) saveRegistry()
-				res.writeHead(200, {'Content-Type': 'application/json'})
-				res.end(JSON.stringify({ status: 'ok' }))
-			}
-			catch (error){
-				res.writeHead(400, {'Content-Type': 'application/json'})
-				res.end(JSON.stringify({ status: 'error', message: error.message }))
-			}
-			return
-		}
 		if (url.pathname === '/message' && req.method === 'POST'){
 			try {
 				const body = await getJSONBody(req)
@@ -481,7 +439,15 @@ module.exports = (port, php, schedule = []) => {
 		}, every * 1000)
 	}
 
-	loadRegistry()
+	for (const [rawHost, entry] of Object.entries(hosts)){
+		const host = normalizeHost(rawHost)
+		const app = String((entry && entry.app) || '')
+		if (!host || !APP_RE.test(app)){
+			console.error(`Ignoring invalid daemon host: ${rawHost}`)
+			continue
+		}
+		registry.set(host, { app, build: !!(entry && entry.build) })
+	}
 	server.listen(port, LISTEN, () => console.log(`Phlo daemon listening on ${LISTEN}:${port} (${registry.size} hosts, ${schedule.length} scheduled)`))
 
 	return { dispatch, runtime, registry, pools }

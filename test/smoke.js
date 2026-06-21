@@ -1,17 +1,14 @@
 const assert = require('assert')
 const http = require('http')
-const fs = require('fs')
-const os = require('os')
 const path = require('path')
 const WebSocket = require('ws')
 
 const STUB = path.join(__dirname, 'fake-php.js')
 const APP = '/tmp/phlo-daemon-smoke/app.php'
-const REG = path.join(os.tmpdir(), 'phlo-daemon-smoke-registry.json')
+const HOSTS = { 'test.local': { app: APP, build: false } }
 
 process.env.PHLO_DAEMON_IDLE_MS = '250'
 process.env.PHLO_DAEMON_REAP_MS = '120'
-process.env.PHLO_DAEMON_REGISTRY = REG
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
@@ -35,18 +32,14 @@ const ok = (cond, msg) => {
 }
 
 ;(async () => {
-	try { fs.unlinkSync(REG) }
-	catch {}
 	const make = require('../phlo-daemon.js')
 
-	make(3099, STUB)
+	// The host->app map is the source of truth, passed in at construction (as config/daemon.js does).
+	make(3099, STUB, [], HOSTS)
 	await sleep(200)
 
-	let r = await call(3099, '/register', { host: 'test.local', app: APP, build: false })
-	ok(r.json && r.json.status === 'ok', 'register accepted')
-	ok(fs.existsSync(REG), 'registry persisted to disk')
-	r = await call(3099, '/health')
-	ok(r.json.registered.includes('test.local'), 'host appears in /health registered')
+	let r = await call(3099, '/health')
+	ok(r.json.registered.includes('test.local'), 'host from the config host-map appears in /health registered')
 
 	r = await call(3099, '/dispatch', { app: APP, target: 'foo::bar', args: ['x'] })
 	ok(r.json.status === 'ok' && r.json.result && r.json.result.target === 'foo::bar' && r.json.result.args[0] === 'x', 'dispatch returns the worker result')
@@ -75,13 +68,9 @@ const ok = (cond, msg) => {
 	})
 	ok(code === 401, 'upgrade without a token cookie is refused (401), got: ' + code)
 
-	make(3098, STUB)
-	await sleep(200)
-	r = await call(3098, '/health')
-	ok(r.json.registered.includes('test.local'), 'a fresh daemon reloads the persisted registry (restart-safe)')
+	r = await call(3099, '/register', { host: 'x.local', app: APP })
+	ok(r.status === 404, 'the removed /register endpoint now 404s (self-registration retired)')
 
-	try { fs.unlinkSync(REG) }
-	catch {}
 	console.log(`\nsmoke: ${passed} checks passed`)
 	process.exit(0)
 })().catch(e => {
