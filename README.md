@@ -38,30 +38,34 @@ Binds `127.0.0.1` by default (local-only; gate at the network boundary).
   - response: default `{status:"ok", result}`; `async:true` → `202 {status:"ok", queued:true}`;
     `stream:true` → an `application/x-ndjson` stream of `{t:line,data}*` then `{t:done,result}` /
     `{t:error}` (used for streaming output, e.g. websocket `receive`)
-- `POST /register` `{host, app, build}`: an app announces its host (persisted to `registry.json`).
 - `POST /message` `{host, target, data}`: the broadcast bridge the websocket pushes through.
 - `GET /health`: `{workers, cap, pools, sockets, registered}` — live worker total vs cap, per-pool
-  stats keyed by app path (`workers`, `busy`, `queued`), connected sockets per host, registered hosts.
+  stats keyed by app path (`workers`, `busy`, `queued`), connected sockets per host, configured hosts.
 
 ## Configuration
 
 ```js
-require('phlo-daemon')(port, phpBinary, schedule?)
+require('phlo-daemon')(port, phpBinary, schedule?, hosts?)
 ```
 
-No host map, no pool sizing: apps register their own host on first request, and each pool scales on
-demand up to a cap of one less than the core count, reaping idle workers. One-shot vs pooled follows
-the app's registered `build` flag (a `build: true` dev app runs one-shot; a release app is pooled).
+No pool sizing: each pool scales on demand up to a cap of one less than the core count, reaping idle
+workers. The `hosts` argument is the websocket host→app map (the source of truth; there is no
+self-registration), and one-shot vs pooled follows each host's `build` flag in it (a `build: true`
+dev app runs one-shot; a release app is pooled).
 
 ```js
 require('./phlo-daemon.js')(3001, '/usr/bin/php-zts', [
   { app: '/srv/dashboard/www/app.php', target: 'fleet::poll', every: 120, build: true },
   { app: '/srv/api/www/app.php',       target: 'tasks::run',  every: 60,  build: false },
-])
+], {
+  'demo.example.nl': { app: '/srv/demo/www/app.php', build: true },
+})
 ```
 
 - `schedule`: `{app, target, every, build}` entries the daemon dispatches on their interval, first
   run one interval after boot, replacing cron for `tasks::run` / `fleet::poll`.
+- `hosts`: websocket host→app map, `{ host: { app, build } }`, declared in `config/daemon.js` and
+  loaded into the registry at startup.
 - `PHLO_DAEMON_IDLE_MS` / `PHLO_DAEMON_REAP_MS`: env overrides for the idle timeout and the reap sweep.
 
 ## Consumers
