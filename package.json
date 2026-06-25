@@ -1,9 +1,14 @@
 {
   "name": "phlo-daemon",
-  "version": "0.1.0",
+  "version": "1.0.0-RC3",
   "description": "The optional always-on Phlo service: a dynamic phlo_serve worker pool, the websocket server, and a task scheduler, in one node process. Apps self-register their host; core Phlo works without it.",
   "main": "phlo-daemon.js",
   "license": "MIT",
+  "files": [
+    "phlo-daemon.js",
+    "README.md",
+    "LICENSE"
+  ],
   "dependencies": {
     "ws": "^8.18.3"
   },
