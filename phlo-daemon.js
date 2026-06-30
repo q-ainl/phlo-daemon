@@ -4,7 +4,7 @@ const { spawn } = require('child_process')
 const { randomBytes } = require('crypto')
 const { WebSocketServer } = require('ws')
 
-module.exports = (port, php, schedule = [], hosts = {}) => {
+module.exports = (port, php, tasks = [], hosts = {}) => {
 	if (!port) throw new Error('Missing port.')
 	if (!php) throw new Error('Missing php binary.')
 
@@ -427,16 +427,16 @@ module.exports = (port, php, schedule = [], hosts = {}) => {
 		}
 	}, REAP_MS)
 
-	for (const s of schedule){
-		const app = String((s && s.app) || '')
-		const target = String((s && s.target) || '')
-		const every = Math.max(1, parseInt(s && s.every, 10) || 0)
-		const build = !!(s && s.build)
-		if (!APP_RE.test(app) || !target || !every) continue
+	// Auto-run tasks::run every minute for each app that declares %app->tasks. The schedule (every/
+	// daily/weekly) lives in the app, not here: this is only the cron-replacing minute tick per task app.
+	for (const t of tasks){
+		const app = String((t && t.app) || '')
+		const build = !!(t && t.build)
+		if (!APP_RE.test(app)) continue
 		setInterval(() => {
-			try { dispatch(runtime(app, build), target, [], null, false).catch(e => console.error(`schedule '${target}' on ${app}: ${e.message}`)) }
-			catch (e){ console.error(`schedule '${target}' on ${app}: ${e.message}`) }
-		}, every * 1000)
+			try { dispatch(runtime(app, build), 'tasks::run', [], null, false).catch(e => console.error(`tasks::run on ${app}: ${e.message}`)) }
+			catch (e){ console.error(`tasks::run on ${app}: ${e.message}`) }
+		}, 60000)
 	}
 
 	for (const [rawHost, entry] of Object.entries(hosts)){
@@ -448,7 +448,7 @@ module.exports = (port, php, schedule = [], hosts = {}) => {
 		}
 		registry.set(host, { app, build: !!(entry && entry.build) })
 	}
-	server.listen(port, LISTEN, () => console.log(`Phlo daemon listening on ${LISTEN}:${port} (${registry.size} hosts, ${schedule.length} scheduled)`))
+	server.listen(port, LISTEN, () => console.log(`Phlo daemon listening on ${LISTEN}:${port} (${registry.size} hosts, ${tasks.length} task apps)`))
 
 	return { dispatch, runtime, registry, pools }
 }
