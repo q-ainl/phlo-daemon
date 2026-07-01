@@ -3,6 +3,6 @@
 // container as FrankenPHP).
 process.env.PHLO_ENGINE ??= '/phlo'
 const host = process.env.WS_HOST || 'localhost'
-require('/opt/phlo/node_modules/phlo-daemon')(3001, 'php-zts', [], {
+require('/opt/phlo/phlo-daemon.js')(3001, 'php-zts', [], {
 	[host]: { app: '/app/www/app.php', build: true },
 })
