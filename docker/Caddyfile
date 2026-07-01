@@ -1,0 +1,17 @@
+{
+	frankenphp
+}
+
+{$SERVER_NAME::80} {
+	root * /app/www
+	encode zstd gzip
+
+	@websocket path /websocket
+	handle @websocket {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	@notStatic not file
+	rewrite @notStatic /app.php
+	php_server
+}
