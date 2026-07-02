@@ -47,7 +47,7 @@ Binds `127.0.0.1` by default (local-only; gate at the network boundary).
 ## Configuration
 
 ```js
-require('phlo-daemon')(port, phpBinary, schedule?, hosts?)
+require('phlo-daemon')(port, phpBinary, tasks?, hosts?)
 ```
 
 No pool sizing: each pool scales on demand up to a cap of one less than the core count, reaping idle
@@ -57,15 +57,16 @@ dev app runs one-shot; a release app is pooled).
 
 ```js
 require('./phlo-daemon.js')(3001, '/usr/bin/php-zts', [
-  { app: '/srv/dashboard/www/app.php', target: 'fleet::poll', every: 120, build: true },
-  { app: '/srv/api/www/app.php',       target: 'tasks::run',  every: 60,  build: false },
+  { app: '/srv/dashboard/www/app.php', build: true },
+  { app: '/srv/api/www/app.php',       build: false },
 ], {
   'demo.example.nl': { app: '/srv/demo/www/app.php', build: true },
 })
 ```
 
-- `schedule`: `{app, target, every, build}` entries the daemon dispatches on their interval, first
-  run one interval after boot, replacing cron for `tasks::run` / `fleet::poll`.
+- `tasks`: the task apps, `{app, build}` entries. The daemon runs `tasks::run` on each listed app
+  every minute (first run one minute after boot), replacing the per-app cron entry. Which tasks
+  fire and how often is declared in the app itself (`%app->tasks`), never here.
 - `hosts`: websocket host→app map, `{ host: { app, build } }`, declared in `config/daemon.js` and
   loaded into the registry at startup.
 - `PHLO_DAEMON_IDLE_MS` / `PHLO_DAEMON_REAP_MS`: env overrides for the idle timeout and the reap sweep.
@@ -79,10 +80,10 @@ require('./phlo-daemon.js')(3001, '/usr/bin/php-zts', [
   by `app` path when the app sets the optional `daemon` constant
   (`phlo_app(daemon: 3001)`), otherwise they keep their one-shot subprocess
   behaviour. Adopting the daemon is opt-in, never required, and needs no host→app config.
+- **Phlo WhatsApp** stays its own service (persistent phone session); it is monitored, not absorbed.
 
 The [Phlo Poll demo](https://github.com/q-ainl/phlo-demo-poll) is a small complete example of
 Phlo Realtime on the daemon: one vote broadcasts to every open tab.
-- **Phlo WhatsApp** stays its own service (persistent phone session); it is monitored, not absorbed.
 
 ## Run
 
