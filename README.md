@@ -13,6 +13,8 @@ Core Phlo always works without it: every target is callable as a one-shot CLI pr
 The daemon's dispatch core knows nothing about any specific feature. The WebSocket server and the
 scheduler are built in; the PHP runtime helpers (`phlo_sync`/`phlo_async`/…) reach it over HTTP.
 
+![The daemon: dispatch, Phlo Realtime and the scheduler on one worker pool](.github/architecture.svg)
+
 ## Worker protocol
 
 Each worker runs `php <app.php> phlo_serve`, boots the app once, then answers newline-JSON requests
@@ -77,6 +79,9 @@ require('./phlo-daemon.js')(3001, '/usr/bin/php-zts', [
   by `app` path when the app sets the optional `daemon` constant
   (`phlo_app(daemon: 3001)`), otherwise they keep their one-shot subprocess
   behaviour. Adopting the daemon is opt-in, never required, and needs no host→app config.
+
+The [Phlo Poll demo](https://github.com/q-ainl/phlo-demo-poll) is a small complete example of
+Phlo Realtime on the daemon: one vote broadcasts to every open tab.
 - **Phlo WhatsApp** stays its own service (persistent phone session); it is monitored, not absorbed.
 
 ## Run

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="430" viewBox="0 0 760 430" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+	<rect width="760" height="430" rx="12" fill="#0d1117"/>
+	<text x="380" y="40" text-anchor="middle" fill="#e6edf3" font-size="19" font-weight="bold">One daemon: pool, realtime and scheduler</text>
+	<g>
+		<rect x="40" y="70" width="320" height="56" rx="8" fill="#101c16" stroke="#16c784" stroke-width="2"/>
+		<text x="60" y="94" fill="#16c784" font-size="14" font-weight="bold">Phlo app</text>
+		<text x="60" y="114" fill="#9da7b3" font-size="12">phlo_sync / phlo_async / await / cast</text>
+	</g>
+	<g>
+		<rect x="400" y="70" width="320" height="56" rx="8" fill="#101c16" stroke="#16c784" stroke-width="2"/>
+		<text x="420" y="94" fill="#16c784" font-size="14" font-weight="bold">Browsers</text>
+		<text x="420" y="114" fill="#9da7b3" font-size="12">WebSocket upgrade per host</text>
+	</g>
+	<path d="M200 126 V 170" stroke="#3a4451" stroke-width="2" marker-end="url(#a)"/>
+	<path d="M560 126 V 170" stroke="#3a4451" stroke-width="2" marker-end="url(#a)"/>
+	<text x="212" y="152" fill="#657386" font-size="11">HTTP :3001</text>
+	<text x="572" y="152" fill="#657386" font-size="11">WS :3001</text>
+	<g>
+		<rect x="40" y="174" width="680" height="120" rx="8" fill="#11241b" stroke="#16c784" stroke-width="2"/>
+		<text x="60" y="200" fill="#16c784" font-size="14" font-weight="bold">phlo-daemon</text>
+		<rect x="60" y="214" width="200" height="60" rx="6" fill="#0d1117" stroke="#2b3f35" stroke-width="1.5"/>
+		<text x="76" y="238" fill="#e6edf3" font-size="12" font-weight="bold">Dispatch</text>
+		<text x="76" y="256" fill="#9da7b3" font-size="11">any target, sync or stream</text>
+		<rect x="280" y="214" width="200" height="60" rx="6" fill="#0d1117" stroke="#2b3f35" stroke-width="1.5"/>
+		<text x="296" y="238" fill="#e6edf3" font-size="12" font-weight="bold">Phlo Realtime</text>
+		<text x="296" y="256" fill="#9da7b3" font-size="11">wsAuth / wsReceive / cast</text>
+		<rect x="500" y="214" width="200" height="60" rx="6" fill="#0d1117" stroke="#2b3f35" stroke-width="1.5"/>
+		<text x="516" y="238" fill="#e6edf3" font-size="12" font-weight="bold">Scheduler</text>
+		<text x="516" y="256" fill="#9da7b3" font-size="11">tasks::run per app, every minute</text>
+	</g>
+	<path d="M380 294 V 336" stroke="#3a4451" stroke-width="2" marker-end="url(#a)"/>
+	<g>
+		<rect x="40" y="340" width="680" height="56" rx="8" fill="#101c16" stroke="#16c784" stroke-width="2"/>
+		<text x="60" y="364" fill="#16c784" font-size="14" font-weight="bold">Worker pool</text>
+		<text x="60" y="384" fill="#9da7b3" font-size="12">php app.php phlo_serve - boot once, newline-JSON, scales on demand</text>
+	</g>
+	<defs>
+		<marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#3a4451"/></marker>
+	</defs>
+</svg>
