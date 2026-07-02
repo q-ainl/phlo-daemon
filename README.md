@@ -47,28 +47,27 @@ Binds `127.0.0.1` by default (local-only; gate at the network boundary).
 ## Configuration
 
 ```js
-require('phlo-daemon')(port, phpBinary, tasks?, hosts?)
+require('phlo-daemon')(port, phpBinary, hosts?)
 ```
 
 No pool sizing: each pool scales on demand up to a cap of one less than the core count, reaping idle
-workers. The `hosts` argument is the websocket host→app map (the source of truth; there is no
-self-registration), and one-shot vs pooled follows each host's `build` flag in it (a `build: true`
-dev app runs one-shot; a release app is pooled).
+workers. The `hosts` argument is the host→app map of every app the daemon serves (the sole source of
+truth; there is no self-registration), and one-shot vs pooled follows each host's `build` flag in it
+(a `build: true` dev app runs one-shot; a release app is pooled).
 
 ```js
-require('./phlo-daemon.js')(3001, '/usr/bin/php-zts', [
-  { app: '/srv/dashboard/www/app.php', build: true },
-  { app: '/srv/api/www/app.php',       build: false },
-], {
-  'demo.example.nl': { app: '/srv/demo/www/app.php', build: true },
+require('./phlo-daemon.js')(3001, '/usr/bin/php-zts', {
+  'app.example.com':  { app: '/srv/app/www/app.php',  build: false },
+  'demo.example.nl':  { app: '/srv/demo/www/app.php', build: true },
 })
 ```
 
-- `tasks`: the task apps, `{app, build}` entries. The daemon runs `tasks::run` on each listed app
-  every minute (first run one minute after boot), replacing the per-app cron entry. Which tasks
-  fire and how often is declared in the app itself (`%app->tasks`), never here.
-- `hosts`: websocket host→app map, `{ host: { app, build } }`, declared in `config/daemon.js` and
-  loaded into the registry at startup.
+- `hosts`: the host→app map, `{ host: { app, build } }`, declared in `config/daemon.js` and loaded
+  into the registry at startup. It is the sole source of truth for the apps the daemon serves and
+  drives everything: dispatch pools, websocket routing, and the cron-replacing `tasks::run` minute
+  tick on every served app (first run one minute after boot). Which tasks fire, and how often, is
+  declared in the app itself (`%app->tasks`), never here; an app that does not load the tasks
+  resource is skipped automatically.
 - `PHLO_DAEMON_IDLE_MS` / `PHLO_DAEMON_REAP_MS`: env overrides for the idle timeout and the reap sweep.
 
 ## Consumers
@@ -88,7 +87,7 @@ Phlo Realtime on the daemon: one vote broadcasts to every open tab.
 ## Run
 
 ```sh
-node config.js            # config.js requires this module with (port, php, schedule)
+node config.js            # config.js requires this module with (port, php, hosts)
 # or under a process manager
 pm2 start config.js --name phlo-daemon
 ```

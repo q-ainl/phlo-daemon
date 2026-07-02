@@ -4,7 +4,7 @@ const { spawn } = require('child_process')
 const { randomBytes } = require('crypto')
 const { WebSocketServer } = require('ws')
 
-module.exports = (port, php, tasks = [], hosts = {}) => {
+module.exports = (port, php, hosts = {}) => {
 	if (!port) throw new Error('Missing port.')
 	if (!php) throw new Error('Missing php binary.')
 
@@ -188,7 +188,7 @@ module.exports = (port, php, tasks = [], hosts = {}) => {
 		proc.stdout.on('end', () => { if (onLine && buffer.trim()) onLine(buffer) })
 		proc.stderr.on('data', data => console.error(`PHP stderr for '${target}' on ${rt.label}:\n${data.toString()}`))
 		proc.on('error', err => reject(new Error(`Failed to start PHP for '${target}' on ${rt.label}: ${err.message}`)))
-		proc.on('close', code => code === 0 ? resolve(out.trim() || null) : reject(new Error(`PHP for '${target}' on ${rt.label} exited with code ${code}`)))
+		proc.on('close', code => code === 0 ? resolve(out.trim() || null) : reject(new Error(`PHP for '${target}' on ${rt.label} exited with code ${code}${out.trim() ? `: ${out.trim().slice(-300)}` : ''}`)))
 	})
 
 	const dispatch = (rt, target, args = [], onLine = null, stream = false) =>
@@ -427,18 +427,6 @@ module.exports = (port, php, tasks = [], hosts = {}) => {
 		}
 	}, REAP_MS)
 
-	// Auto-run tasks::run every minute for each app that declares %app->tasks. The schedule (every/
-	// daily/weekly) lives in the app, not here: this is only the cron-replacing minute tick per task app.
-	for (const t of tasks){
-		const app = String((t && t.app) || '')
-		const build = !!(t && t.build)
-		if (!APP_RE.test(app)) continue
-		setInterval(() => {
-			try { dispatch(runtime(app, build), 'tasks::run', [], null, false).catch(e => console.error(`tasks::run on ${app}: ${e.message}`)) }
-			catch (e){ console.error(`tasks::run on ${app}: ${e.message}`) }
-		}, 60000)
-	}
-
 	for (const [rawHost, entry] of Object.entries(hosts)){
 		const host = normalizeHost(rawHost)
 		const app = String((entry && entry.app) || '')
@@ -448,7 +436,26 @@ module.exports = (port, php, tasks = [], hosts = {}) => {
 		}
 		registry.set(host, { app, build: !!(entry && entry.build) })
 	}
-	server.listen(port, LISTEN, () => console.log(`Phlo daemon listening on ${LISTEN}:${port} (${registry.size} hosts, ${tasks.length} task apps)`))
+
+	// Every served app gets the cron-replacing minute tick: dispatch tasks::run; the schedule
+	// (every/daily/weekly) lives in the app itself (%app->tasks). The first failing tick decides:
+	// an app that does not load the tasks resource is dropped silently, any other error keeps
+	// the app on the list and is logged.
+	const taskApps = new Map()
+	for (const { app, build } of registry.values()) taskApps.has(app) || taskApps.set(app, { build, active: true, lastError: null })
+	setInterval(() => {
+		for (const [app, t] of taskApps){
+			if (!t.active) continue
+			const fail = e => {
+				if (/Class \\?"tasks\\?" not found/.test(e.message)) return t.active = false
+				if (e.message !== t.lastError) console.error(`tasks::run on ${app}: ${e.message}`)
+				t.lastError = e.message
+			}
+			try { dispatch(runtime(app, t.build), 'tasks::run', [], null, false).then(() => t.lastError = null, fail) }
+			catch (e){ fail(e) }
+		}
+	}, 60000)
+	server.listen(port, LISTEN, () => console.log(`Phlo daemon listening on ${LISTEN}:${port} (${registry.size} hosts)`))
 
 	return { dispatch, runtime, registry, pools }
 }
